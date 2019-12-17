@@ -23,6 +23,8 @@
 
 #include <vmm_error.h>
 #include <vmm_compiler.h>
+#include <vmm_cpumask.h>
+#include <vmm_smp.h>
 #include <vmm_stdio.h>
 
 #include <cpu_sbi.h>
@@ -97,13 +99,14 @@ void sbi_clear_ipi(void)
 	sbi_ecall(SBI_EXT_0_1_CLEAR_IPI, 0, 0, 0, 0, 0, 0, 0);
 }
 
-void sbi_send_ipi(const unsigned long *hart_mask)
+static int __sbi_send_ipi_v01(const unsigned long *hart_mask)
 {
 	sbi_ecall(SBI_EXT_0_1_SEND_IPI, 0,
 		  (unsigned long)hart_mask, 0, 0, 0, 0, 0);
+	return 0;
 }
 
-void sbi_set_timer(u64 stime_value)
+static void __sbi_set_timer_v01(u64 stime_value)
 {
 #ifdef CONFIG_64BIT
 	sbi_ecall(SBI_EXT_0_1_SET_TIMER, 0, stime_value, 0, 0, 0, 0, 0);
@@ -113,18 +116,189 @@ void sbi_set_timer(u64 stime_value)
 #endif
 }
 
+static int __sbi_rfence_v01(unsigned long fid,
+			    const unsigned long *hart_mask,
+			    unsigned long start, unsigned long size,
+			    unsigned long arg4, unsigned long arg5)
+{
+	int result = 0;
+
+	switch (fid) {
+	case SBI_EXT_RFENCE_REMOTE_FENCE_I:
+		sbi_ecall(SBI_EXT_0_1_REMOTE_FENCE_I, 0,
+			  (unsigned long)hart_mask, 0, 0, 0, 0, 0);
+		break;
+	case SBI_EXT_RFENCE_REMOTE_SFENCE_VMA:
+		sbi_ecall(SBI_EXT_0_1_REMOTE_SFENCE_VMA, 0,
+			  (unsigned long)hart_mask, start, size,
+			  0, 0, 0);
+		break;
+	case SBI_EXT_RFENCE_REMOTE_SFENCE_VMA_ASID:
+		sbi_ecall(SBI_EXT_0_1_REMOTE_SFENCE_VMA_ASID, 0,
+			  (unsigned long)hart_mask, start, size,
+			  arg4, 0, 0);
+		break;
+	default:
+		vmm_printf("%s: unknown function ID [%lu]\n", __func__, fid);
+		result = VMM_EINVALID;
+		break;
+	};
+
+	return result;
+}
+
+static void __sbi_set_timer_v02(u64 stime_value)
+{
+#ifdef CONFIG_64BIT
+	sbi_ecall(SBI_EXT_TIME, SBI_EXT_TIME_SET_TIMER, stime_value, 0,
+		  0, 0, 0, 0);
+#else
+	sbi_ecall(SBI_EXT_TIME, SBI_EXT_TIME_SET_TIMER, stime_value,
+		  stime_value >> 32, 0, 0, 0, 0);
+#endif
+}
+
+static int __sbi_send_ipi_v02(const unsigned long *hart_mask)
+{
+	struct vmm_cpumask tmask;
+	unsigned long hart, hbase, hmask_val;
+	struct sbiret ret = {0};
+	int result;
+	u32 cpu;
+
+	if (!hart_mask) {
+		vmm_cpumask_clear(&tmask);
+		for_each_online_cpu(cpu) {
+			result = vmm_smp_map_hwid(cpu, &hart);
+			if (result || (CONFIG_CPU_COUNT <= hart))
+				continue;
+			vmm_cpumask_set_cpu(hart, &tmask);
+		}
+		hart_mask = vmm_cpumask_bits(&tmask);
+	}
+
+	for (hbase = 0; hbase < CONFIG_CPU_COUNT; hbase += BITS_PER_LONG) {
+		hmask_val = hart_mask[hbase / BITS_PER_LONG];
+		if (!hmask_val)
+			continue;
+
+		ret = sbi_ecall(SBI_EXT_IPI, SBI_EXT_IPI_SEND_IPI, hmask_val,
+				hbase, 0, 0, 0, 0);
+		if (ret.error) {
+			result = sbi_err_map_xvisor_errno(ret.error);
+			vmm_printf("%s: hbase=%lu failed with error [%d]\n",
+				   __func__, hbase, result);
+			return result;
+		}
+	}
+
+	return 0;
+}
+
+static int __sbi_rfence_v02(unsigned long fid,
+			    const unsigned long *hart_mask,
+			    unsigned long start, unsigned long size,
+			    unsigned long arg4, unsigned long arg5)
+{
+	struct vmm_cpumask tmask;
+	unsigned long hart, hbase, hmask_val;
+	struct sbiret ret = {0};
+	int result;
+	u32 cpu;
+
+	if (!hart_mask) {
+		vmm_cpumask_clear(&tmask);
+		for_each_online_cpu(cpu) {
+			result = vmm_smp_map_hwid(cpu, &hart);
+			if (result || (CONFIG_CPU_COUNT <= hart))
+				continue;
+			vmm_cpumask_set_cpu(hart, &tmask);
+		}
+		hart_mask = vmm_cpumask_bits(&tmask);
+	}
+
+	for (hbase = 0; hbase < CONFIG_CPU_COUNT; hbase += BITS_PER_LONG) {
+		hmask_val = hart_mask[hbase / BITS_PER_LONG];
+		if (!hmask_val)
+			continue;
+
+		switch (fid) {
+		case SBI_EXT_RFENCE_REMOTE_FENCE_I:
+			ret = sbi_ecall(SBI_EXT_RFENCE, fid, hmask_val, hbase,
+					0, 0, 0, 0);
+			break;
+		case SBI_EXT_RFENCE_REMOTE_SFENCE_VMA:
+			ret = sbi_ecall(SBI_EXT_RFENCE, fid, hmask_val, hbase,
+					start, size, 0, 0);
+			break;
+		case SBI_EXT_RFENCE_REMOTE_SFENCE_VMA_ASID:
+			ret = sbi_ecall(SBI_EXT_RFENCE, fid, hmask_val, hbase,
+					start, size, arg4, 0);
+			break;
+		case SBI_EXT_RFENCE_REMOTE_HFENCE_GVMA:
+			ret = sbi_ecall(SBI_EXT_RFENCE, fid, hmask_val, hbase,
+					start, size, 0, 0);
+			break;
+		case SBI_EXT_RFENCE_REMOTE_HFENCE_GVMA_VMID:
+			ret = sbi_ecall(SBI_EXT_RFENCE, fid, hmask_val, hbase,
+					start, size, arg4, 0);
+			break;
+		case SBI_EXT_RFENCE_REMOTE_HFENCE_VVMA:
+			ret = sbi_ecall(SBI_EXT_RFENCE, fid, hmask_val, hbase,
+					start, size, 0, 0);
+			break;
+		case SBI_EXT_RFENCE_REMOTE_HFENCE_VVMA_ASID:
+			ret = sbi_ecall(SBI_EXT_RFENCE, fid, hmask_val, hbase,
+					start, size, arg4, 0);
+			break;
+		default:
+			vmm_printf("%s: unknown function ID [%lu]\n",
+				   __func__, fid);
+			result = VMM_EINVALID;
+			break;
+		};
+
+		if (ret.error) {
+			result = sbi_err_map_xvisor_errno(ret.error);
+			vmm_printf("%s: hbase=%lu failed with error [%d]\n",
+				   __func__, hbase, result);
+			return result;
+		}
+	}
+
+	return 0;
+}
+
+static void (*__sbi_set_timer)(u64 stime) = __sbi_set_timer_v01;
+static int (*__sbi_send_ipi)(const unsigned long *hart_mask) =
+						__sbi_send_ipi_v01;
+static int (*__sbi_rfence)(unsigned long fid,
+		const unsigned long *hart_mask,
+		unsigned long start, unsigned long size,
+		unsigned long arg4, unsigned long arg5) = __sbi_rfence_v01;
+
+void sbi_send_ipi(const unsigned long *hart_mask)
+{
+	__sbi_send_ipi(hart_mask);
+}
+
+void sbi_set_timer(u64 stime_value)
+{
+	__sbi_set_timer(stime_value);
+}
+
 void sbi_remote_fence_i(const unsigned long *hart_mask)
 {
-	sbi_ecall(SBI_EXT_0_1_REMOTE_FENCE_I, 0,
-		  (unsigned long)hart_mask, 0, 0, 0, 0, 0);
+	__sbi_rfence(SBI_EXT_RFENCE_REMOTE_FENCE_I,
+		     hart_mask, 0, 0, 0, 0);
 }
 
 void sbi_remote_sfence_vma(const unsigned long *hart_mask,
 			   unsigned long start,
 			   unsigned long size)
 {
-	sbi_ecall(SBI_EXT_0_1_REMOTE_SFENCE_VMA, 0,
-		  (unsigned long)hart_mask, start, size, 0, 0, 0);
+	__sbi_rfence(SBI_EXT_RFENCE_REMOTE_SFENCE_VMA,
+		     hart_mask, start, size, 0, 0);
 }
 
 void sbi_remote_sfence_vma_asid(const unsigned long *hart_mask,
@@ -132,8 +306,42 @@ void sbi_remote_sfence_vma_asid(const unsigned long *hart_mask,
 				unsigned long size,
 				unsigned long asid)
 {
-	sbi_ecall(SBI_EXT_0_1_REMOTE_SFENCE_VMA_ASID, 0,
-		  (unsigned long)hart_mask, start, size, asid, 0, 0);
+	__sbi_rfence(SBI_EXT_RFENCE_REMOTE_SFENCE_VMA_ASID,
+		     hart_mask, start, size, asid, 0);
+}
+
+void sbi_remote_hfence_gvma(const unsigned long *hart_mask,
+			    unsigned long start,
+			    unsigned long size)
+{
+	__sbi_rfence(SBI_EXT_RFENCE_REMOTE_HFENCE_GVMA,
+		     hart_mask, start, size, 0, 0);
+}
+
+void sbi_remote_hfence_gvma_vmid(const unsigned long *hart_mask,
+				 unsigned long start,
+				 unsigned long size,
+				 unsigned long vmid)
+{
+	__sbi_rfence(SBI_EXT_RFENCE_REMOTE_HFENCE_GVMA_VMID,
+		     hart_mask, start, size, vmid, 0);
+}
+
+void sbi_remote_hfence_vvma(const unsigned long *hart_mask,
+			    unsigned long start,
+			    unsigned long size)
+{
+	__sbi_rfence(SBI_EXT_RFENCE_REMOTE_HFENCE_VVMA,
+		     hart_mask, start, size, 0, 0);
+}
+
+void sbi_remote_hfence_vvma_asid(const unsigned long *hart_mask,
+				 unsigned long start,
+				 unsigned long size,
+				 unsigned long asid)
+{
+	__sbi_rfence(SBI_EXT_RFENCE_REMOTE_HFENCE_VVMA_ASID,
+		     hart_mask, start, size, asid, 0);
 }
 
 static long sbi_get_spec_version(void)
@@ -190,6 +398,11 @@ int sbi_spec_is_0_1(void)
 	return (sbi_spec_version == SBI_SPEC_VERSION_DEFAULT) ? 1 : 0;
 }
 
+int sbi_has_0_2_rfence(void)
+{
+	return (__sbi_rfence == __sbi_rfence_v01) ? 0 : 1;
+}
+
 unsigned long sbi_major_version(void)
 {
 	return (sbi_spec_version >> SBI_SPEC_VERSION_MAJOR_SHIFT) &
@@ -215,6 +428,18 @@ int __init sbi_init(void)
 	if (!sbi_spec_is_0_1()) {
 		vmm_init_printf("SBI implementation ID=0x%lx Version=0x%lx\n",
 			sbi_get_firmware_id(), sbi_get_firmware_version());
+		if (sbi_probe_extension(SBI_EXT_TIME) > 0) {
+			__sbi_set_timer = __sbi_set_timer_v02;
+			vmm_init_printf("SBI v0.2 TIME extension detected\n");
+		}
+		if (sbi_probe_extension(SBI_EXT_IPI) > 0) {
+			__sbi_send_ipi = __sbi_send_ipi_v02;
+			vmm_init_printf("SBI v0.2 IPI extension detected\n");
+		}
+		if (sbi_probe_extension(SBI_EXT_RFENCE) > 0) {
+			__sbi_rfence = __sbi_rfence_v02;
+			vmm_init_printf("SBI v0.2 RFENCE extension detected\n");
+		}
 	}
 
 	return 0;
