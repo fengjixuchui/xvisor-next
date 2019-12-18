@@ -75,6 +75,28 @@ int sbi_err_map_xvisor_errno(int err)
 	};
 }
 
+void sbi_cpumask_to_hartmask(const struct vmm_cpumask *cmask,
+			     struct vmm_cpumask *hmask)
+{
+	int rc;
+	u32 cpu;
+	unsigned long hart;
+
+	if (!cmask || !hmask)
+		return;
+
+	vmm_cpumask_clear(hmask);
+	for_each_cpu(cpu, cmask) {
+		rc = vmm_smp_map_hwid(cpu, &hart);
+		if (rc || (CONFIG_CPU_COUNT <= hart)) {
+			vmm_lwarning("SBI", "invalid hart=%lu for cpu=%d\n",
+				     hart, cpu);
+			continue;
+		}
+		vmm_cpumask_set_cpu(hart, hmask);
+	}
+}
+
 void sbi_console_putchar(int ch)
 {
 	sbi_ecall(SBI_EXT_0_1_CONSOLE_PUTCHAR, 0, ch, 0, 0, 0, 0, 0);
@@ -161,19 +183,12 @@ static void __sbi_set_timer_v02(u64 stime_value)
 static int __sbi_send_ipi_v02(const unsigned long *hart_mask)
 {
 	struct vmm_cpumask tmask;
-	unsigned long hart, hbase, hmask_val;
+	unsigned long hbase, hmask_val;
 	struct sbiret ret = {0};
 	int result;
-	u32 cpu;
 
 	if (!hart_mask) {
-		vmm_cpumask_clear(&tmask);
-		for_each_online_cpu(cpu) {
-			result = vmm_smp_map_hwid(cpu, &hart);
-			if (result || (CONFIG_CPU_COUNT <= hart))
-				continue;
-			vmm_cpumask_set_cpu(hart, &tmask);
-		}
+		sbi_cpumask_to_hartmask(cpu_online_mask, &tmask);
 		hart_mask = vmm_cpumask_bits(&tmask);
 	}
 
@@ -201,19 +216,12 @@ static int __sbi_rfence_v02(unsigned long fid,
 			    unsigned long arg4, unsigned long arg5)
 {
 	struct vmm_cpumask tmask;
-	unsigned long hart, hbase, hmask_val;
+	unsigned long hbase, hmask_val;
 	struct sbiret ret = {0};
 	int result;
-	u32 cpu;
 
 	if (!hart_mask) {
-		vmm_cpumask_clear(&tmask);
-		for_each_online_cpu(cpu) {
-			result = vmm_smp_map_hwid(cpu, &hart);
-			if (result || (CONFIG_CPU_COUNT <= hart))
-				continue;
-			vmm_cpumask_set_cpu(hart, &tmask);
-		}
+		sbi_cpumask_to_hartmask(cpu_online_mask, &tmask);
 		hart_mask = vmm_cpumask_bits(&tmask);
 	}
 
