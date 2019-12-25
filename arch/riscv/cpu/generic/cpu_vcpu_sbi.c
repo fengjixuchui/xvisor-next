@@ -23,6 +23,7 @@
 
 #include <vmm_error.h>
 #include <vmm_stdio.h>
+#include <vmm_cpumask.h>
 #include <vmm_vcpu_irq.h>
 #include <vio/vmm_vserial.h>
 #include <arch_vcpu.h>
@@ -32,90 +33,112 @@
 #include <cpu_vcpu_trap.h>
 #include <cpu_vcpu_timer.h>
 #include <cpu_vcpu_unpriv.h>
+#include <cpu_sbi.h>
 #include <cpu_tlb.h>
 #include <riscv_encoding.h>
 #include <riscv_sbi.h>
 
-u16 cpu_vcpu_sbi_version_major(void)
-{
-	return SBI_VERSION_MAJOR;
-}
-
-u16 cpu_vcpu_sbi_version_minor(void)
-{
-	return SBI_VERSION_MINOR;
-}
-
-int cpu_vcpu_sbi_ecall(struct vmm_vcpu *vcpu, ulong mcause,
+int cpu_vcpu_sbi_ecall(struct vmm_vcpu *vcpu, ulong cause,
 		       arch_regs_t *regs)
 {
 	u8 send;
+	u32 hcpu;
 	int i, ret = 0;
+	bool next_sepc = TRUE;
 	struct vmm_vcpu *rvcpu;
-	unsigned long hmask, ut_scause, ut_stval;
-	struct riscv_guest_serial *gs = riscv_guest_serial(vcpu->guest);
+	struct vmm_cpumask cm, hm;
+	unsigned long hmask, ut_scause = 0;
+	struct vmm_guest *guest = vcpu->guest;
+	struct riscv_guest_serial *gs = riscv_guest_serial(guest);
 
 	switch (regs->a7) {
-	case SBI_SET_TIMER:
+	case SBI_EXT_0_1_SET_TIMER:
 		if (riscv_priv(vcpu)->xlen == 32)
 			riscv_timer_event_start(vcpu,
 				((u64)regs->a1 << 32) | (u64)regs->a0);
 		else
 			riscv_timer_event_start(vcpu, (u64)regs->a0);
 		break;
-	case SBI_CONSOLE_PUTCHAR:
-		send = (u8) regs->a0;
+	case SBI_EXT_0_1_CONSOLE_PUTCHAR:
+		send = (u8)regs->a0;
 		vmm_vserial_receive(gs->vserial, &send, 1);
 		break;
-	case SBI_CONSOLE_GETCHAR:
+	case SBI_EXT_0_1_CONSOLE_GETCHAR:
 		/* TODO: Implement get function if required */
-		regs->a0 = VMM_ENOTSUPP;
+		regs->a0 = SBI_ERR_NOT_SUPPORTED;
 		break;
-	case SBI_CLEAR_IPI:
+	case SBI_EXT_0_1_CLEAR_IPI:
 		vmm_vcpu_irq_clear(vcpu, IRQ_VS_SOFT);
 		break;
-	case SBI_SEND_IPI:
-		ut_scause = ut_stval = 0;
-		hmask = __cpu_vcpu_unpriv_read_ulong(regs->a0, &ut_scause);
+	case SBI_EXT_0_1_SEND_IPI:
+		if (regs->a0)
+			hmask = __cpu_vcpu_unpriv_read_ulong(regs->a0,
+							     &ut_scause);
+		else
+			hmask = (1UL << guest->vcpu_count) - 1;
 		if (ut_scause) {
-			return cpu_vcpu_redirect_trap(vcpu, regs,
-						      ut_scause, regs->a0);
-		} else {
-			for_each_set_bit(i, &hmask, BITS_PER_LONG) {
-				rvcpu = vmm_manager_guest_vcpu(vcpu->guest, i);
-				vmm_vcpu_irq_assert(rvcpu, IRQ_VS_SOFT, 0x0);
-			}
+			next_sepc = FALSE;
+			ret = cpu_vcpu_redirect_trap(vcpu, regs,
+						     ut_scause, regs->a0);
+			break;
+		}
+		for_each_set_bit(i, &hmask, BITS_PER_LONG) {
+			rvcpu = vmm_manager_guest_vcpu(guest, i);
+			if (!(vmm_manager_vcpu_get_state(rvcpu) &
+			      VMM_VCPU_STATE_INTERRUPTIBLE))
+				continue;
+			vmm_vcpu_irq_assert(rvcpu, IRQ_VS_SOFT, 0x0);
 		}
 		break;
-	case SBI_SHUTDOWN:
-		ret = vmm_manager_guest_shutdown_request(vcpu->guest);
+	case SBI_EXT_0_1_SHUTDOWN:
+		ret = vmm_manager_guest_shutdown_request(guest);
 		if (ret)
 			vmm_printf("%s: guest %s shutdown request failed "
 				   "with error = %d\n", __func__,
-				   vcpu->guest->name, ret);
+				   guest->name, ret);
 		break;
-	case SBI_REMOTE_FENCE_I:
-		sbi_remote_fence_i(NULL);
-		break;
-
-	/*TODO:There should be a way to call remote hfence.bvma.
-	 * Prefered method is now a SBI call. Until then, just flush
-	 * all tlbs.
-	 */
-	case SBI_REMOTE_SFENCE_VMA:
-		/*TODO: Parse vma range.*/
-		sbi_remote_sfence_vma(NULL, 0, 0);
-		break;
-	case SBI_REMOTE_SFENCE_VMA_ASID:
-		/*TODO: Parse vma range for given ASID */
-		sbi_remote_sfence_vma(NULL, 0, 0);
+	case SBI_EXT_0_1_REMOTE_FENCE_I:
+	case SBI_EXT_0_1_REMOTE_SFENCE_VMA:
+	case SBI_EXT_0_1_REMOTE_SFENCE_VMA_ASID:
+		if (regs->a0)
+			hmask = __cpu_vcpu_unpriv_read_ulong(regs->a0,
+							     &ut_scause);
+		else
+			hmask = (1UL << guest->vcpu_count) - 1;
+		if (ut_scause) {
+			next_sepc = FALSE;
+			ret = cpu_vcpu_redirect_trap(vcpu, regs,
+						     ut_scause, regs->a0);
+			break;
+		}
+		vmm_cpumask_clear(&cm);
+		for_each_set_bit(i, &hmask, BITS_PER_LONG) {
+			rvcpu = vmm_manager_guest_vcpu(guest, i);
+			if (!(vmm_manager_vcpu_get_state(rvcpu) &
+			      VMM_VCPU_STATE_INTERRUPTIBLE))
+				continue;
+			if (vmm_manager_vcpu_get_hcpu(rvcpu, &hcpu))
+				continue;
+			vmm_cpumask_set_cpu(hcpu, &cm);
+		}
+		sbi_cpumask_to_hartmask(&cm, &hm);
+		if (regs->a7 == SBI_EXT_0_1_REMOTE_FENCE_I) {
+			sbi_remote_fence_i(vmm_cpumask_bits(&hm));
+		} else if (regs->a7 == SBI_EXT_0_1_REMOTE_SFENCE_VMA) {
+			sbi_remote_hfence_vvma(vmm_cpumask_bits(&hm),
+					       regs->a1, regs->a2);
+		} else if (regs->a7 == SBI_EXT_0_1_REMOTE_SFENCE_VMA_ASID) {
+			sbi_remote_hfence_vvma_asid(vmm_cpumask_bits(&hm),
+						    regs->a1, regs->a2,
+						    regs->a3);
+		}
 		break;
 	default:
-		regs->a0 = VMM_ENOTSUPP;
+		regs->a0 = SBI_ERR_NOT_SUPPORTED;
 		break;
 	};
 
-	if (!ret)
+	if (next_sepc)
 		regs->sepc += 4;
 
 	return ret;
