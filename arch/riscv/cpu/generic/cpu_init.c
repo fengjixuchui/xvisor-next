@@ -29,6 +29,7 @@
 #include <libs/bitmap.h>
 
 #include <cpu_hwcap.h>
+#include <cpu_mmu.h>
 #include <cpu_sbi.h>
 #include <cpu_tlb.h>
 #include <riscv_csr.h>
@@ -179,7 +180,12 @@ bool __riscv_isa_extension_available(const unsigned long *isa_bitmap, int bit)
 }
 
 unsigned long riscv_xlen = 0;
-unsigned long riscv_vmid_bits = 0;
+#ifdef CONFIG_64BIT
+unsigned long riscv_stage2_mode = HGATP_MODE_SV39X4;
+#else
+unsigned long riscv_stage2_mode = HGATP_MODE_SV32X4;
+#endif
+unsigned long riscv_stage2_vmid_bits = 0;
 unsigned long riscv_timer_hz = 0;
 
 void arch_cpu_print(struct vmm_chardev *cdev, u32 cpu)
@@ -198,7 +204,38 @@ void arch_cpu_print_summary(struct vmm_chardev *cdev)
 #endif
 
 	vmm_cprintf(cdev, "%-25s: %s\n", "CPU ISA String", isa);
-	vmm_cprintf(cdev, "%-25s: %ld\n", "CPU VMID Bits", riscv_vmid_bits);
+	switch (cpu_mmu_hypervisor_pgtbl_mode()) {
+	case SATP_MODE_SV32:
+		strcpy(isa, "Sv32");
+		break;
+	case SATP_MODE_SV39:
+		strcpy(isa, "Sv39");
+		break;
+	case SATP_MODE_SV48:
+		strcpy(isa, "Sv48");
+		break;
+	default:
+		strcpy(isa, "Unknown");
+		break;
+	};
+	vmm_cprintf(cdev, "%-25s: %s\n", "CPU Hypervisor MMU Mode", isa);
+	switch (riscv_stage2_mode) {
+	case HGATP_MODE_SV32X4:
+		strcpy(isa, "Sv32");
+		break;
+	case HGATP_MODE_SV39X4:
+		strcpy(isa, "Sv39");
+		break;
+	case HGATP_MODE_SV48X4:
+		strcpy(isa, "Sv48");
+		break;
+	default:
+		strcpy(isa, "Unknown");
+		break;
+	};
+	vmm_cprintf(cdev, "%-25s: %s\n", "CPU Stage2 MMU Mode", isa);
+	vmm_cprintf(cdev, "%-25s: %ld\n",
+		    "CPU Stage2 VMID Bits", riscv_stage2_vmid_bits);
 	vmm_cprintf(cdev, "%-25s: %ld Hz\n", "CPU Time Base", riscv_timer_hz);
 }
 
@@ -292,13 +329,24 @@ int __init cpu_parse_devtree_hwcap(void)
 	}
 	vmm_devtree_dref_node(cpus);
 
-	/* Setup riscv_vmid_bits */
+	/* Setup Stage2 mode and Stage2 VMID bits */
 	if (riscv_isa_extension_available(NULL, h)) {
 		csr_write(CSR_HGATP, HGATP_VMID_MASK);
-		val = csr_read(CSR_HGATP);
+		val = csr_read(CSR_HGATP) & HGATP_VMID_MASK;
+		riscv_stage2_vmid_bits = fls_long(val >> HGATP_VMID_SHIFT);
+
+#ifdef CONFIG_64BIT
+		/* Try Sv48 MMU mode */
+		csr_write(CSR_HGATP, HGATP_VMID_MASK |
+				     (HGATP_MODE_SV48X4 << HGATP_MODE_SHIFT));
+		val = csr_read(CSR_HGATP) >> HGATP_MODE_SHIFT;
+		if (val == HGATP_MODE_SV48X4) {
+			riscv_stage2_mode = HGATP_MODE_SV48X4;
+		}
+#endif
+
 		csr_write(CSR_HGATP, 0);
 		__hfence_gvma_all();
-		riscv_vmid_bits = fls_long(val >> HGATP_VMID_SHIFT);
 	}
 
 	return rc;
