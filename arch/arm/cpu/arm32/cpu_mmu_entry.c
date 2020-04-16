@@ -22,6 +22,9 @@
  */
 
 #include <vmm_types.h>
+#include <arch_io.h>
+#include <libs/libfdt.h>
+#include <generic_devtree.h>
 #include <cpu_defines.h>
 #include <cpu_mmu.h>
 
@@ -38,7 +41,7 @@ extern u8 defl1_ttbl[];
 extern u8 defl2_ttbl[];
 extern int defl2_ttbl_used[];
 extern virtual_addr_t defl2_ttbl_mapva[];
-#ifdef CONFIG_DEFTERM_EARLY_PRINT
+#ifdef CONFIG_ARCH_GENERIC_DEFTERM_EARLY
 extern u8 defterm_early_base[];
 #endif
 
@@ -198,19 +201,10 @@ void __attribute__ ((section(".entry")))
 	extern virtual_addr_t SECTION_END(SECTION)
 
 DECLARE_EXTERN_SECTION(text);
+DECLARE_EXTERN_SECTION(init_text);
 DECLARE_EXTERN_SECTION(cpuinit);
 DECLARE_EXTERN_SECTION(spinlock);
-DECLARE_EXTERN_SECTION(init);
-DECLARE_EXTERN_SECTION(initdata);
 DECLARE_EXTERN_SECTION(rodata);
-DECLARE_EXTERN_SECTION(data);
-DECLARE_EXTERN_SECTION(percpu);
-DECLARE_EXTERN_SECTION(bss);
-DECLARE_EXTERN_SECTION(svc_stack);
-DECLARE_EXTERN_SECTION(abt_stack);
-DECLARE_EXTERN_SECTION(und_stack);
-DECLARE_EXTERN_SECTION(irq_stack);
-DECLARE_EXTERN_SECTION(fiq_stack);
 
 #define SETUP_RO_SECTION(ENTRY, SECTION)				\
 	__setup_initial_ttbl(&(ENTRY),					\
@@ -220,14 +214,35 @@ DECLARE_EXTERN_SECTION(fiq_stack);
 			     TRUE,					\
 			     FALSE)
 
+virtual_size_t __attribute__ ((section(".entry")))
+    _fdt_size(virtual_addr_t dtb_start)
+{
+	u32 *src = (u32 *)dtb_start;
+
+	if (rev32(src[0]) != FDT_MAGIC) {
+		while (1); /* Hang !!! */
+	}
+
+	return rev32(src[1]);
+}
+
 void __attribute__ ((section(".entry")))
     _setup_initial_ttbl(virtual_addr_t load_start, virtual_addr_t load_end,
-		    virtual_addr_t exec_start, virtual_addr_t exec_end)
+			virtual_addr_t exec_start, virtual_addr_t dtb_start)
 {
 	u32 i;
-#ifdef CONFIG_DEFTERM_EARLY_PRINT
+	virtual_addr_t exec_end = exec_start + (load_end - load_start);
+#ifdef CONFIG_ARCH_GENERIC_DEFTERM_EARLY
 	virtual_addr_t defterm_early_va;
 #endif
+	virtual_addr_t *dt_virt =
+		(virtual_addr_t *)to_load_pa((virtual_addr_t)&devtree_virt);
+	virtual_addr_t *dt_virt_base =
+		(virtual_addr_t *)to_load_pa((virtual_addr_t)&devtree_virt_base);
+	virtual_size_t *dt_virt_size =
+		(virtual_size_t *)to_load_pa((virtual_addr_t)&devtree_virt_size);
+	physical_addr_t *dt_phys_base =
+		(physical_addr_t *)to_load_pa((virtual_addr_t)&devtree_phys_base);
 	struct mmu_entry_ctrl entry = { 0, 0, NULL, 0, NULL };
 
 	/* Init ttbl_used, ttbl_mapva, and related stuff */
@@ -248,7 +263,7 @@ void __attribute__ ((section(".entry")))
 		((u32 *)entry.l1_base)[i] = 0x0;
 	}
 
-#ifdef CONFIG_DEFTERM_EARLY_PRINT
+#ifdef CONFIG_ARCH_GENERIC_DEFTERM_EARLY
 	/* Map UART for early defterm
 	 * Note: This is for early debug purpose
 	 */
@@ -256,7 +271,7 @@ void __attribute__ ((section(".entry")))
 	__setup_initial_ttbl(&entry,
 			     defterm_early_va,
 			     defterm_early_va + TTBL_L2TBL_SMALL_PAGE_SIZE,
-			     (virtual_addr_t)CONFIG_DEFTERM_EARLY_BASE_PA,
+			     (virtual_addr_t)CONFIG_ARCH_GENERIC_DEFTERM_EARLY_BASE_PA,
 			     FALSE, TRUE);
 #endif
 
@@ -271,7 +286,7 @@ void __attribute__ ((section(".entry")))
 	 * Note: This mapping is used at runtime
 	 */
 	SETUP_RO_SECTION(entry, text);
-	SETUP_RO_SECTION(entry, init);
+	SETUP_RO_SECTION(entry, init_text);
 	SETUP_RO_SECTION(entry, cpuinit);
 	SETUP_RO_SECTION(entry, spinlock);
 	SETUP_RO_SECTION(entry, rodata);
@@ -281,5 +296,17 @@ void __attribute__ ((section(".entry")))
 	 * Note: This mapping is used at runtime
 	 */
 	__setup_initial_ttbl(&entry, exec_start, exec_end, load_start,
+			     TRUE, TRUE);
+
+	/* Compute and save devtree addresses */
+	*dt_phys_base = dtb_start & ~(TTBL_L2TBL_SMALL_PAGE_SIZE - 1);
+	*dt_virt_base = exec_start - _fdt_size(dtb_start);
+	*dt_virt_base &= ~(TTBL_L2TBL_SMALL_PAGE_SIZE - 1);
+	*dt_virt_size = exec_start - *dt_virt_base;
+	*dt_virt = *dt_virt_base + (dtb_start & (TTBL_L2TBL_SMALL_PAGE_SIZE - 1));
+
+	/* Map device tree */
+	__setup_initial_ttbl(&entry, *dt_virt_base,
+			     *dt_virt_base + *dt_virt_size, *dt_phys_base,
 			     TRUE, TRUE);
 }

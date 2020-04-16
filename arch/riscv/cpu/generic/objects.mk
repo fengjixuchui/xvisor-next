@@ -61,7 +61,6 @@ cpu-asflags += $(arch-cflags-y) -march=$(march-y)$(arch-a-y)fd$(arch-c-y)
 cpu-ldflags += $(arch-ldflags-y) -march=$(march-y)$(arch-a-y)$(arch-c-y)
 
 cpu-objs-y+= cpu_entry.o
-cpu-objs-y+= cpu_entry_helper.o
 cpu-objs-y+= cpu_proc.o
 cpu-objs-y+= cpu_tlb.o
 cpu-objs-y+= cpu_sbi.o
@@ -75,6 +74,9 @@ cpu-objs-$(CONFIG_SMP)+= cpu_locks.o
 cpu-objs-y+= cpu_atomic.o
 cpu-objs-y+= cpu_atomic64.o
 cpu-objs-y+= cpu_exception.o
+cpu-objs-$(CONFIG_SMP)+=cpu_smp_ops.o
+cpu-objs-$(CONFIG_SMP)+=cpu_smp_ops_default.o
+cpu-objs-$(CONFIG_SMP)+=cpu_smp_ops_sbi.o
 cpu-objs-y+= cpu_vcpu_helper.o
 cpu-objs-y+= cpu_vcpu_csr.o
 cpu-objs-y+= cpu_vcpu_fp.o

@@ -100,15 +100,6 @@ _bss_zero:
 	sub	a0, a0, a4
 	add	sp, a0, a2
 
-	/* Check and copy FDT */
-	la	a6, _bootcpu_reg1
-	REG_L	a0, (a6)
-	la	a6, __builtin_dtb
-	REG_L	a1, (a6)
-	sub	a1, a1, a4
-	add	a1, a1, a2
-	call	_copy_fdt
-
 	/* Setup initial page table */
 	la	a6, _load_start
 	REG_L	a0, (a6)
@@ -116,7 +107,7 @@ _bss_zero:
 	REG_L	a1, (a6)
 	la	a6, __exec_start
 	REG_L	a2, (a6)
-	la	a6, __exec_end
+	la	a6, _bootcpu_reg1
 	REG_L	a3, (a6)
 	call	_setup_initial_pgtbl
 
@@ -166,19 +157,32 @@ _start_secondary_wait:
 	 * Note: From this point primary CPU startup is same as secondary CPU
 	 */
 _start_secondary_nopen:
-	/* Set trap vector to spin forever to help debug */
-	la	a6, _start_hang
+	/* Set trap vector to appropriate place after enabling MMU */
+	la	a6, __exec_start
+	REG_L	a4, (a6)
+	la	a6, _load_start
+	REG_L	a2, (a6)
+	la	a6, _start_secondary_nopen_mmu_on
+	sub	a6, a6, a2
+	add	a6, a6, a4
 	csrw	CSR_STVEC, a6
 
 	/* Enable MMU */
 	la	a0, def_pgtbl
 	srl	a0, a0, 12 /* Shift right by page size */
-	la	a1, def_pgtbl_mode
+	la	a1, riscv_stage1_mode
 	REG_L	a1, (a1)
 	sll	a1, a1, SATP_MODE_SHIFT
 	or	a0, a0, a1
 	sfence.vma
 	csrw	CSR_SATP, a0
+
+	/* We should not reach here so just spin forever */
+	j	_start_hang
+
+	/* MMU is ON !!! */
+	.align 2
+_start_secondary_nopen_mmu_on:
 
 	/* Jump to final execution address */
 	la	a6, __cpu_init
@@ -190,8 +194,6 @@ _start_hang:
 	j	_start_hang
 
 	.align 3
-__builtin_dtb:
-	RISCV_PTR dt_blob_start
 __exec_start:
 	RISCV_PTR _code_start
 __exec_end:

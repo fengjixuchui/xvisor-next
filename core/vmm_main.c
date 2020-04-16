@@ -435,22 +435,9 @@ static void __init init_bootcpu(void)
 		goto init_bootcpu_fail;
 	}
 
-	/* Initialize heap */
+	/* Initialize normal heap */
 	vmm_init_printf("heap management\n");
 	ret = vmm_heap_init();
-	if (ret) {
-		goto init_bootcpu_fail;
-	}
-
-	vmm_init_printf("page pool\n");
-	ret = vmm_pagepool_init();
-	if (ret) {
-		goto init_bootcpu_fail;
-	}
-
-        /* Initialize exception table */
-	vmm_init_printf("exception table\n");
-	ret = vmm_extable_init();
 	if (ret) {
 		goto init_bootcpu_fail;
 	}
@@ -465,6 +452,47 @@ static void __init init_bootcpu(void)
 	/* Initialize device tree based reserved-memory */
 	vmm_init_printf("device tree reserved-memory\n");
 	ret = vmm_devtree_reserved_memory_init();
+	if (ret) {
+		goto init_bootcpu_fail;
+	}
+
+	/* Initialize DMA heap */
+	vmm_init_printf("DMA heap management\n");
+	ret = vmm_dma_heap_init();
+	if (ret) {
+		goto init_bootcpu_fail;
+	}
+
+	/* Initialize CPU nascent */
+	vmm_init_printf("CPU nascent\n");
+	ret = arch_cpu_nascent_init();
+	if (ret) {
+		goto init_bootcpu_fail;
+	}
+
+	/* Initialize Board nascent */
+	vmm_init_printf("board nascent\n");
+	ret = arch_board_nascent_init();
+	if (ret) {
+		goto init_bootcpu_fail;
+	}
+
+	/* Call nascent init functions */
+	vmm_init_printf("nascent funtions\n");
+	ret = vmm_initfn_nascent();
+	if (ret) {
+		goto init_bootcpu_fail;
+	}
+
+	vmm_init_printf("page pool\n");
+	ret = vmm_pagepool_init();
+	if (ret) {
+		goto init_bootcpu_fail;
+	}
+
+        /* Initialize exception table */
+	vmm_init_printf("exception table\n");
+	ret = vmm_extable_init();
 	if (ret) {
 		goto init_bootcpu_fail;
 	}
