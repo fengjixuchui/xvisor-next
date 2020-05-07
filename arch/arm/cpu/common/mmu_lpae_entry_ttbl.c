@@ -26,20 +26,25 @@
 #include <arch_io.h>
 #include <libs/libfdt.h>
 #include <generic_devtree.h>
-#include <arch_mmu.h>
+#include <generic_mmu.h>
 
 struct mmu_lpae_entry_ctrl {
 	u32 ttbl_count;
-	int *ttbl_tree;
 	u64 *next_ttbl;
 	virtual_addr_t ttbl_base;
 };
 
-extern u8 def_pgtbl[];
-extern int def_pgtbl_tree[];
 #ifdef CONFIG_ARCH_GENERIC_DEFTERM_EARLY
 extern u8 defterm_early_base[];
 #endif
+
+#define PGTBL_ROOT_SIZE		(1UL << ARCH_MMU_STAGE1_ROOT_SIZE_ORDER)
+#define PGTBL_ROOT_ENTCNT	(PGTBL_ROOT_SIZE / sizeof(arch_pte_t))
+
+#define PGTBL_COUNT		ARCH_MMU_STAGE1_NONROOT_INITIAL_COUNT
+#define PGTBL_SIZE		(1UL << ARCH_MMU_STAGE1_NONROOT_SIZE_ORDER)
+#define PGTBL_SIZE_SHIFT	ARCH_MMU_STAGE1_NONROOT_SIZE_ORDER
+#define PGTBL_ENTCNT		(PGTBL_SIZE / sizeof(arch_pte_t))
 
 void __attribute__ ((section(".entry")))
     __setup_initial_ttbl(struct mmu_lpae_entry_ctrl *lpae_entry,
@@ -66,22 +71,19 @@ void __attribute__ ((section(".entry")))
 						    TTBL_OUTADDR_MASK);
 		} else {
 			/* Allocate new level2 table */
-			if (lpae_entry->ttbl_count == ARCH_INITIAL_PGTBL_COUNT) {
+			if (lpae_entry->ttbl_count == PGTBL_COUNT) {
 				while (1) ;	/* No initial table available */
 			}
-			for (i = 0; i < ARCH_MMU_PGTBL_ENTCNT; i++) {
+			for (i = 0; i < PGTBL_ENTCNT; i++) {
 				lpae_entry->next_ttbl[i] = 0x0ULL;
 			}
-			lpae_entry->ttbl_tree[lpae_entry->ttbl_count] =
-			    ((virtual_addr_t) ttbl -
-			     lpae_entry->ttbl_base) >> ARCH_MMU_PGTBL_SIZE_SHIFT;
 			lpae_entry->ttbl_count++;
 			ttbl[index] |=
 			    (((virtual_addr_t) lpae_entry->next_ttbl) &
 			     TTBL_OUTADDR_MASK);
 			ttbl[index] |= (TTBL_TABLE_MASK | TTBL_VALID_MASK);
 			ttbl = lpae_entry->next_ttbl;
-			lpae_entry->next_ttbl += ARCH_MMU_PGTBL_ENTCNT;
+			lpae_entry->next_ttbl += PGTBL_ENTCNT;
 		}
 
 		/* Setup level2 table */
@@ -93,22 +95,19 @@ void __attribute__ ((section(".entry")))
 						    TTBL_OUTADDR_MASK);
 		} else {
 			/* Allocate new level3 table */
-			if (lpae_entry->ttbl_count == ARCH_INITIAL_PGTBL_COUNT) {
+			if (lpae_entry->ttbl_count == PGTBL_COUNT) {
 				while (1) ;	/* No initial table available */
 			}
-			for (i = 0; i < ARCH_MMU_PGTBL_ENTCNT; i++) {
+			for (i = 0; i < PGTBL_ENTCNT; i++) {
 				lpae_entry->next_ttbl[i] = 0x0ULL;
 			}
-			lpae_entry->ttbl_tree[lpae_entry->ttbl_count] =
-			    ((virtual_addr_t) ttbl -
-			     lpae_entry->ttbl_base) >> ARCH_MMU_PGTBL_SIZE_SHIFT;
 			lpae_entry->ttbl_count++;
 			ttbl[index] |=
 			    (((virtual_addr_t) lpae_entry->next_ttbl) &
 			     TTBL_OUTADDR_MASK);
 			ttbl[index] |= (TTBL_TABLE_MASK | TTBL_VALID_MASK);
 			ttbl = lpae_entry->next_ttbl;
-			lpae_entry->next_ttbl += ARCH_MMU_PGTBL_ENTCNT;
+			lpae_entry->next_ttbl += PGTBL_ENTCNT;
 		}
 
 		/* Setup level3 table */
@@ -197,6 +196,7 @@ void __attribute__ ((section(".entry")))
 			virtual_addr_t exec_start, virtual_addr_t dtb_start)
 {
 	u32 i;
+	u64 *root_ttbl;
 	virtual_addr_t exec_end = exec_start + (load_end - load_start);
 #ifdef CONFIG_ARCH_GENERIC_DEFTERM_EARLY
 	virtual_addr_t defterm_early_va;
@@ -209,32 +209,23 @@ void __attribute__ ((section(".entry")))
 		(virtual_size_t *)to_load_pa((virtual_addr_t)&devtree_virt_size);
 	physical_addr_t *dt_phys_base =
 		(physical_addr_t *)to_load_pa((virtual_addr_t)&devtree_phys_base);
-	struct mmu_lpae_entry_ctrl lpae_entry = { 0, NULL, NULL, 0 };
+	struct mmu_lpae_entry_ctrl lpae_entry = { 0, NULL, 0 };
 
-	/* Init ttbl_base, ttbl_tree, and next_ttbl */
-	lpae_entry.ttbl_tree =
-		(int *)to_load_pa((virtual_addr_t)&def_pgtbl_tree);
+	/* Init ttbl_base and next_ttbl */
+	lpae_entry.ttbl_base = to_load_pa((virtual_addr_t)&stage1_pgtbl_root);
+	lpae_entry.next_ttbl =
+		(u64 *)to_load_pa((virtual_addr_t)&stage1_pgtbl_nonroot);
 
-	cpu_mmu_invalidate_range((virtual_addr_t)&lpae_entry.ttbl_tree[0],
-		ARCH_INITIAL_PGTBL_COUNT * sizeof(lpae_entry.ttbl_tree[0]));
-	for (i = 0; i < ARCH_INITIAL_PGTBL_COUNT; i++) {
-		lpae_entry.ttbl_tree[i] = -1;
-	}
-
-	lpae_entry.ttbl_base = to_load_pa((virtual_addr_t)&def_pgtbl);
-	lpae_entry.next_ttbl = (u64 *)lpae_entry.ttbl_base;
+	/* Invalidate stale contents of page tables in cache */
+	cpu_mmu_invalidate_range(lpae_entry.ttbl_base, PGTBL_ROOT_SIZE);
+	cpu_mmu_invalidate_range((virtual_addr_t)lpae_entry.next_ttbl,
+				 PGTBL_COUNT * PGTBL_SIZE);
 
 	/* Init first ttbl */
-	cpu_mmu_invalidate_range((virtual_addr_t)lpae_entry.next_ttbl,
-				 ARCH_INITIAL_PGTBL_COUNT *
-				 ARCH_MMU_PGTBL_ENTCNT *
-				 sizeof(*lpae_entry.next_ttbl));
-	for (i = 0; i < ARCH_MMU_PGTBL_ENTCNT; i++) {
-		lpae_entry.next_ttbl[i] = 0x0ULL;
+	root_ttbl = (u64 *)lpae_entry.ttbl_base;
+	for (i = 0; i < PGTBL_ROOT_ENTCNT; i++) {
+		root_ttbl[i] = 0x0ULL;
 	}
-
-	lpae_entry.ttbl_count++;
-	lpae_entry.next_ttbl += ARCH_MMU_PGTBL_ENTCNT;
 
 #ifdef CONFIG_ARCH_GENERIC_DEFTERM_EARLY
 	/* Map UART for early defterm

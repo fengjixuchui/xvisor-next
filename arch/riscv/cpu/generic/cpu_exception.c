@@ -45,7 +45,8 @@ void do_error(struct vmm_vcpu *vcpu, arch_regs_t *regs,
 	vmm_printf("%s: CPU%d: VCPU=%s %s (error %d)\n",
 		   __func__, cpu, (vcpu) ? vcpu->name : "(NULL)", msg, err);
 	cpu_vcpu_dump_general_regs(NULL, regs);
-	cpu_vcpu_dump_exception_regs(NULL, scause, csr_read(CSR_STVAL), csr_read(CSR_HTVAL));
+	cpu_vcpu_dump_exception_regs(NULL, scause, csr_read(CSR_STVAL),
+				     csr_read(CSR_HTVAL), csr_read(CSR_HTINST));
 	if (panic) {
 		vmm_panic("%s: please reboot ...\n", __func__);
 	}
@@ -78,6 +79,7 @@ void do_handle_trap(arch_regs_t *regs, unsigned long cause)
 	int rc = VMM_OK;
 	bool panic = TRUE;
 	const char *msg = "trap handling failed";
+	struct cpu_vcpu_trap trap;
 	struct vmm_vcpu *vcpu;
 
 	if ((cause == CAUSE_STORE_PAGE_FAULT) &&
@@ -113,10 +115,12 @@ void do_handle_trap(arch_regs_t *regs, unsigned long cause)
 	case CAUSE_STORE_GUEST_PAGE_FAULT:
 		msg = "page fault failed";
 		if (regs->hstatus & HSTATUS_SPV) {
-			rc = cpu_vcpu_page_fault(vcpu, regs,
-						 cause, csr_read(CSR_STVAL),
-						 csr_read(CSR_HTVAL),
-						 csr_read(CSR_HTINST));
+			trap.sepc = regs->sepc;
+			trap.scause = cause;
+			trap.stval = csr_read(CSR_STVAL);
+			trap.htval = csr_read(CSR_HTVAL);
+			trap.htinst = csr_read(CSR_HTINST);
+			rc = cpu_vcpu_page_fault(vcpu, regs, &trap);
 			panic = FALSE;
 		} else {
 			rc = VMM_EINVALID;

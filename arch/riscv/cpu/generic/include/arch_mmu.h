@@ -26,18 +26,13 @@
 
 #include <vmm_const.h>
 
-#define ARCH_INITIAL_PGTBL_COUNT		8
+#define ARCH_MMU_STAGE1_ROOT_SIZE_ORDER		12
+#define ARCH_MMU_STAGE1_ROOT_ALIGN_ORDER	12
 
-#define ARCH_MMU_PGTBL_SIZE			0x00001000
-#define ARCH_MMU_PGTBL_SIZE_SHIFT		12
-#define ARCH_MMU_PGTBL_ALIGN_ORDER		ARCH_MMU_PGTBL_SIZE_SHIFT
-#ifdef CONFIG_64BIT
-#define ARCH_MMU_PGTBL_ENTCNT			512
-#define ARCH_MMU_PGTBL_ENTSZ			8
-#else
-#define ARCH_MMU_PGTBL_ENTCNT			1024
-#define ARCH_MMU_PGTBL_ENTSZ			4
-#endif
+#define ARCH_MMU_STAGE1_NONROOT_INITIAL_COUNT	8
+
+#define ARCH_MMU_STAGE1_NONROOT_SIZE_ORDER	12
+#define ARCH_MMU_STAGE1_NONROOT_ALIGN_ORDER	12
 
 #ifdef CONFIG_64BIT
 /* L3 index Bit[47:39] */
@@ -132,15 +127,19 @@ struct arch_pgflags {
 };
 typedef struct arch_pgflags arch_pgflags_t;
 
-void arch_mmu_pgtbl_clear(virtual_addr_t tbl_va);
+int arch_mmu_pgtbl_min_align_order(int stage);
 
-void arch_mmu_stage2_tlbflush(physical_addr_t gpa, physical_size_t gsz);
+int arch_mmu_pgtbl_align_order(int stage, int level);
 
-void arch_mmu_stage1_tlbflush(virtual_addr_t va, virtual_size_t sz);
+int arch_mmu_pgtbl_size_order(int stage, int level);
+
+void arch_mmu_stage2_tlbflush(bool remote,
+			      physical_addr_t gpa, physical_size_t gsz);
+
+void arch_mmu_stage1_tlbflush(bool remote,
+			      virtual_addr_t va, virtual_size_t sz);
 
 bool arch_mmu_valid_block_size(physical_size_t sz);
-
-int arch_mmu_start_level(int stage);
 
 int arch_mmu_start_level(int stage);
 
