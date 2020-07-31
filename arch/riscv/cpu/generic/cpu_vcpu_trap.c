@@ -127,21 +127,7 @@ static int cpu_vcpu_stage2_map(struct vmm_vcpu *vcpu,
 #endif
 	}
 
-	pg.flags.user = 1;
-	if (pg_reg_flags & VMM_REGION_VIRTUAL) {
-		pg.flags.read = 0;
-		pg.flags.write = 0;
-		pg.flags.execute = 1;
-	} else if (pg_reg_flags & VMM_REGION_READONLY) {
-		pg.flags.read = 1;
-		pg.flags.write = 0;
-		pg.flags.execute = 1;
-	} else {
-		pg.flags.read = 1;
-		pg.flags.write = 1;
-		pg.flags.execute = 1;
-	}
-	pg.flags.valid = 1;
+	arch_mmu_pgflags_set(&pg.flags, MMU_STAGE2, pg_reg_flags);
 
 	/* Try to map the page in Stage2 */
 	rc = mmu_map_page(riscv_guest_priv(vcpu->guest)->pgtbl, &pg);
@@ -174,7 +160,7 @@ static int cpu_vcpu_emulate_load(struct vmm_vcpu *vcpu,
 	u16 data16;
 	u32 data32;
 	u64 data64;
-	unsigned long insn;
+	unsigned long insn, insn_len;
 	int rc = VMM_OK, shift = 0, len = 0;
 	struct cpu_vcpu_trap trap = { 0 };
 
@@ -184,6 +170,7 @@ static int cpu_vcpu_emulate_load(struct vmm_vcpu *vcpu,
 		 * transformed instruction or custom instruction.
 		 */
 		insn = htinst | INSN_16BIT_MASK;
+		insn_len = (htinst & 0x2) ? INSN_LEN(insn) : 2;
 	} else {
 		/*
 		 * Bit[0] == 0 implies trapped instruction value is
@@ -196,6 +183,7 @@ static int cpu_vcpu_emulate_load(struct vmm_vcpu *vcpu,
 			trap.sepc = trap.stval = regs->sepc;
 			return cpu_vcpu_redirect_trap(vcpu, regs, &trap);
 		}
+		insn_len = INSN_LEN(insn);
 	}
 
 	if ((insn & INSN_MASK_LW) == INSN_MATCH_LW) {
@@ -283,7 +271,7 @@ static int cpu_vcpu_emulate_load(struct vmm_vcpu *vcpu,
 	};
 
 	if (!rc) {
-		regs->sepc += INSN_LEN(insn);
+		regs->sepc += insn_len;
 	}
 
 	return rc;
@@ -299,7 +287,7 @@ static int cpu_vcpu_emulate_store(struct vmm_vcpu *vcpu,
 	u32 data32;
 	u64 data64;
 	int rc = VMM_OK, len = 0;
-	unsigned long data, insn;
+	unsigned long data, insn, insn_len;
 	struct cpu_vcpu_trap trap = { 0 };
 
 	if (htinst & 0x1) {
@@ -308,6 +296,7 @@ static int cpu_vcpu_emulate_store(struct vmm_vcpu *vcpu,
 		 * transformed instruction or custom instruction.
 		 */
 		insn = htinst | INSN_16BIT_MASK;
+		insn_len = (htinst & 0x2) ? INSN_LEN(insn) : 2;
 	} else {
 		/*
 		 * Bit[0] == 0 implies trapped instruction value is
@@ -320,6 +309,7 @@ static int cpu_vcpu_emulate_store(struct vmm_vcpu *vcpu,
 			trap.sepc = trap.stval = regs->sepc;
 			return cpu_vcpu_redirect_trap(vcpu, regs, &trap);
 		}
+		insn_len = INSN_LEN(insn);
 	}
 
 	data8 = data16 = data32 = data64 = data = GET_RS2(insn, regs);
@@ -384,7 +374,7 @@ static int cpu_vcpu_emulate_store(struct vmm_vcpu *vcpu,
 	};
 
 	if (!rc) {
-		regs->sepc += INSN_LEN(insn);
+		regs->sepc += insn_len;
 	}
 
 	return rc;
@@ -502,7 +492,7 @@ done:
 	return rc;
 }
 
-int cpu_vcpu_illegal_insn_fault(struct vmm_vcpu *vcpu,
+int cpu_vcpu_virtual_insn_fault(struct vmm_vcpu *vcpu,
 				arch_regs_t *regs,
 				unsigned long stval)
 {

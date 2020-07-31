@@ -18,7 +18,7 @@
  *
  * @file generic_devtree.h
  * @author Anup Patel (anup@brainfault.org)
- * @brief Common SMP operations interface
+ * @brief Common device tree interface
  */
 #ifndef __ARCH_GENERIC_DEVTREE_H__
 #define __ARCH_GENERIC_DEVTREE_H__

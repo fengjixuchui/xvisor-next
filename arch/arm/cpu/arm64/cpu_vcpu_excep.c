@@ -49,7 +49,6 @@ static int cpu_vcpu_stage2_map(struct vmm_vcpu *vcpu,
 
 	inaddr = fipa & TTBL_L3_MAP_MASK;
 	size = TTBL_L3_BLOCK_SIZE;
-	pg.flags.sh = 3U;
 
 	rc = vmm_guest_physical_map(vcpu->guest, inaddr, size,
 				    &outaddr, &availsz, &reg_flags);
@@ -93,33 +92,7 @@ static int cpu_vcpu_stage2_map(struct vmm_vcpu *vcpu,
 		}
 	}
 
-	if (pg_reg_flags & VMM_REGION_VIRTUAL) {
-		pg.flags.af = 0;
-		pg.flags.ap = TTBL_HAP_NOACCESS;
-	} else if (pg_reg_flags & VMM_REGION_READONLY) {
-		pg.flags.af = 1;
-		pg.flags.ap = TTBL_HAP_READONLY;
-	} else {
-		pg.flags.af = 1;
-		pg.flags.ap = TTBL_HAP_READWRITE;
-	}
-
-	/* memattr in stage 2
-	 * ------------------
-	 *  0x0 - strongly ordered
-	 *  0x5 - normal-memory NC
-	 *  0xA - normal-memory WT
-	 *  0xF - normal-memory WB
-	 */
-	if (pg_reg_flags & VMM_REGION_CACHEABLE) {
-		if (pg_reg_flags & VMM_REGION_BUFFERABLE) {
-			pg.flags.memattr = 0xF;
-		} else {
-			pg.flags.memattr = 0xA;
-		}
-	} else {
-		pg.flags.memattr = 0x0;
-	}
+	arch_mmu_pgflags_set(&pg.flags, MMU_STAGE2, pg_reg_flags);
 
 	/* Try to map the page in Stage2 */
 	rc = mmu_map_page(arm_guest_priv(vcpu->guest)->ttbl, &pg);
@@ -178,7 +151,7 @@ int cpu_vcpu_data_abort(struct vmm_vcpu *vcpu,
 	case FSC_ACCESS_FAULT_LEVEL3:
 		if (!(iss & ISS_ABORT_ISV_MASK)) {
 			/* Determine instruction physical address */
-			va2pa_at(VA2PA_STAGE1, VA2PA_EL1, VA2PA_RD, regs->pc);
+			va2pa_at(VA2PA_STAGE12, VA2PA_EL1, VA2PA_RD, regs->pc);
 			inst_pa = mrs(par_el1);
 			inst_pa &= PAR_PA_MASK;
 			inst_pa |= (regs->pc & 0x00000FFF);

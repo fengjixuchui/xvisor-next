@@ -100,16 +100,6 @@ void do_handle_trap(arch_regs_t *regs, unsigned long cause)
 	}
 
 	switch (cause) {
-	case CAUSE_ILLEGAL_INSTRUCTION:
-		msg = "illegal instruction fault failed";
-		if (regs->hstatus & HSTATUS_SPV) {
-			rc = cpu_vcpu_illegal_insn_fault(vcpu, regs,
-							 csr_read(CSR_STVAL));
-			panic = FALSE;
-		} else {
-			rc = VMM_EINVALID;
-		}
-		break;
 	case CAUSE_FETCH_GUEST_PAGE_FAULT:
 	case CAUSE_LOAD_GUEST_PAGE_FAULT:
 	case CAUSE_STORE_GUEST_PAGE_FAULT:
@@ -121,6 +111,16 @@ void do_handle_trap(arch_regs_t *regs, unsigned long cause)
 			trap.htval = csr_read(CSR_HTVAL);
 			trap.htinst = csr_read(CSR_HTINST);
 			rc = cpu_vcpu_page_fault(vcpu, regs, &trap);
+			panic = FALSE;
+		} else {
+			rc = VMM_EINVALID;
+		}
+		break;
+	case CAUSE_VIRTUAL_INST_FAULT:
+		msg = "virtual instruction fault failed";
+		if (regs->hstatus & HSTATUS_SPV) {
+			rc = cpu_vcpu_virtual_insn_fault(vcpu, regs,
+							 csr_read(CSR_STVAL));
 			panic = FALSE;
 		} else {
 			rc = VMM_EINVALID;
@@ -186,6 +186,9 @@ int __cpuinit arch_cpu_irq_setup(void)
 		hedeleg |= (1UL << CAUSE_LOAD_PAGE_FAULT);
 		hedeleg |= (1UL << CAUSE_STORE_PAGE_FAULT);
 		csr_write(CSR_HEDELEG, hedeleg);
+
+		/* Update HCOUNTEREN */
+		csr_write(CSR_HCOUNTEREN, -1UL);
 
 		/* Setup final exception handler with hypervisor enabled */
 		csr_write(CSR_STVEC, (virtual_addr_t)&_handle_hyp_exception);
